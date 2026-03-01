@@ -44,4 +44,4 @@ def publish_note_with_tags():
         browser.close()
 
 # 実行
-# publish_note_with_tags()
+publish_note_with_tags()
