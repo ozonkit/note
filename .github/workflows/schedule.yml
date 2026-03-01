@@ -30,7 +30,8 @@ jobs:
           NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
           NOTE_PASS: ${{ secrets.NOTE_PASS }}
           TEST_MODE: "true"
-        run: |
+          PYTHONUNBUFFERED: "1"  # ← 追加！バッファリングを無効化
+        run: python -u publish_note.py  # ← -u フラグを追加
           echo "Starting script..."
           python publish_note.py
           echo "Script finished with exit code: $?"
