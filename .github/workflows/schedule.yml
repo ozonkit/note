@@ -32,6 +32,3 @@ jobs:
           TEST_MODE: "true"
           PYTHONUNBUFFERED: "1"  # ← 追加！バッファリングを無効化
         run: python -u publish_note.py  # ← -u フラグを追加
-          echo "Starting script..."
-          python publish_note.py
-          echo "Script finished with exit code: $?"
