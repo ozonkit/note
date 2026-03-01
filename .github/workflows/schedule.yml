@@ -1,0 +1,23 @@
+name: Note Auto Post
+on:
+  schedule:
+    - cron: '0 12 * * *' # 毎日日本時間の21:00（UTC 12:00）に実行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.9'
+      - name: Install dependencies
+        run: |
+          pip install playwright
+          playwright install chromium
+      - name: Run script
+        env:
+          NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
+          NOTE_PASS: ${{ secrets.NOTE_PASS }}
+        run: python publish_note.py
