@@ -1,8 +1,8 @@
 import os
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
+EDIT_URL = "https://editor.note.com/notes/n466b124c2023/edit/"
 NOTE_LOGIN_URL = "https://note.com/login"
-NOTE_DRAFTS_URL = "https://note.com/notes/drafts"
 
 def log(msg: str):
     print(msg, flush=True)
@@ -13,18 +13,19 @@ def must_env(name: str) -> str:
         raise RuntimeError(f"Missing env var: {name}")
     return v
 
-def pick_first_selector(page, candidates, timeout_each_ms=6000):
-    """候補セレクタのうち最初に見つかったものを返す。見つからなければ None。"""
-    for sel in candidates:
-        try:
-            page.wait_for_selector(sel, timeout=timeout_each_ms)
-            return sel
-        except PlaywrightTimeoutError:
-            continue
-    return None
+def save_debug(page, prefix="debug"):
+    try:
+        page.screenshot(path=f"{prefix}.png", full_page=True)
+    except Exception:
+        pass
+    try:
+        with open(f"{prefix}.html", "w", encoding="utf-8") as f:
+            f.write(page.content())
+    except Exception:
+        pass
+    log(f"Saved {prefix}.png / {prefix}.html")
 
 def dismiss_common_popups(page):
-    """よくある同意/閉じる系を雑に潰す（見つかったらクリックするだけ）。"""
     for sel in [
         'button:has-text("同意")',
         'button:has-text("OK")',
@@ -40,17 +41,57 @@ def dismiss_common_popups(page):
         except Exception:
             pass
 
-def save_debug(page, prefix="debug"):
+def is_login_form_visible(page) -> bool:
+    # note.com/login のフォームが見えているか
     try:
-        page.screenshot(path=f"{prefix}.png", full_page=True)
+        return page.locator("#email").count() > 0 and page.locator("#password").count() > 0
     except Exception:
-        pass
+        return False
+
+def login_if_needed(page, email: str, password: str):
+    """
+    いま表示されているページがログインを要求しているならログインする。
+    成功しない場合は理由を残して落とす。
+    """
+    dismiss_common_popups(page)
+
+    # 既にログイン済みで edit に居るなら何もしない
+    if "editor.note.com" in page.url and "/edit" in page.url:
+        log("Already on editor edit page (likely logged in).")
+        return
+
+    # ログインフォームが見えない場合でも、念のため /login へ行って確認
+    if not is_login_form_visible(page):
+        log("Login form not visible; navigating to login page to check.")
+        page.goto(NOTE_LOGIN_URL, wait_until="domcontentloaded")
+        page.wait_for_load_state("networkidle")
+        dismiss_common_popups(page)
+
+    log(f"Login check URL: {page.url}")
+    if not is_login_form_visible(page):
+        save_debug(page, "debug_login_form_not_found")
+        raise RuntimeError("Login form not found (maybe blocked or different flow). See debug_login_form_not_found.png/html")
+
+    log("Fill credentials")
+    page.locator("#email").fill(email)
+    page.locator("#password").fill(password)
+
+    log("Click login")
+    # クリックと同時に遷移が発生することが多いので、できるだけ「遷移」を待つ
     try:
-        with open(f"{prefix}.html", "w", encoding="utf-8") as f:
-            f.write(page.content())
+        with page.expect_navigation(timeout=15_000):
+            page.locator('button:has-text("ログイン")').first.click()
     except Exception:
-        pass
-    log(f"Saved {prefix}.png / {prefix}.html")
+        # expect_navigation が外れることもあるので、落ち着くまで待つ
+        page.locator('button:has-text("ログイン")').first.click()
+
+    page.wait_for_load_state("networkidle")
+    log(f"After login URL: {page.url}")
+
+    # まだ /login に留まるならログイン失敗
+    if "note.com/login" in page.url:
+        save_debug(page, "debug_login_failed")
+        raise RuntimeError("Login failed (still on /login). See debug_login_failed.png/html")
 
 def publish_note_with_tags():
     hashtags = ["夫婦", "不倫", "再構築", "内省", "正しさ"]
@@ -77,139 +118,70 @@ def publish_note_with_tags():
         page.set_default_timeout(30_000)
 
         try:
-            # --------------------
-            # Login
-            # --------------------
-            log("Go to login page")
-            page.goto(NOTE_LOGIN_URL, wait_until="domcontentloaded")
+            # 1) 編集URLへ直行（未ログインならここでログインへ飛ぶ）
+            log(f"Go to edit URL: {EDIT_URL}")
+            page.goto(EDIT_URL, wait_until="domcontentloaded")
             page.wait_for_load_state("networkidle")
-
             log(f"Current URL: {page.url}")
             log(f"Title: {page.title()}")
 
+            # 2) 必要ならログイン
+            login_if_needed(page, email, password)
+
+            # 3) ログイン後、必ず編集URLへ戻す（リダイレクトされていた場合用）
+            if "editor.note.com" not in page.url or "/edit" not in page.url:
+                log("Navigate back to edit URL after login.")
+                page.goto(EDIT_URL, wait_until="domcontentloaded")
+                page.wait_for_load_state("networkidle")
+
+            log(f"On editor page URL: {page.url}")
+            if "editor.note.com" not in page.url or "/edit" not in page.url:
+                save_debug(page, "debug_not_on_editor")
+                raise RuntimeError("Not on editor edit page even after login. See debug_not_on_editor.png/html")
+
             dismiss_common_popups(page)
 
-            # まずは #email / #password を最優先にする
-            email_candidates = [
-                "#email",
-                "input#email",
-                'input[name="email"]',
-                'input[type="email"]',
-                'input[autocomplete="email"]',
-                'input[placeholder*="メール"]',
-                'input[aria-label*="メール"]',
+            # 4) 公開設定を開く（候補を広めに）
+            log("Open publish settings")
+            publish_setting_candidates = [
+                'button:has-text("公開設定")',
+                'button:has-text("公開")',
+                'a:has-text("公開設定")',
             ]
-            pass_candidates = [
-                "#password",
-                "input#password",
-                'input[name="password"]',
-                'input[type="password"]',
-                'input[autocomplete="current-password"]',
-                'input[placeholder*="パスワード"]',
-            ]
-
-            email_sel = pick_first_selector(page, email_candidates)
-            pass_sel = pick_first_selector(page, pass_candidates)
-
-            if not email_sel or not pass_sel:
-                save_debug(page, "debug")
-                raise RuntimeError(
-                    f"Login inputs not found. email_sel={email_sel}, pass_sel={pass_sel}. "
-                    "Possibly blocked/redirected/different DOM."
-                )
-
-            log(f"Email input found: {email_sel}")
-            log(f"Password input found: {pass_sel}")
-
-            log("Fill credentials")
-            page.locator(email_sel).fill(email)
-            page.locator(pass_sel).fill(password)
-
-            # ログインボタン候補
-            login_btn_candidates = [
-                'button:has-text("ログイン")',
-                'button[type="submit"]',
-                'input[type="submit"]',
-                'button:has-text("Login")',
-            ]
-
-            clicked = False
-            for sel in login_btn_candidates:
+            opened = False
+            for sel in publish_setting_candidates:
                 try:
-                    page.locator(sel).first.click(timeout=6_000)
-                    log(f"Clicked login button: {sel}")
-                    clicked = True
-                    break
+                    if page.locator(sel).count() > 0:
+                        page.locator(sel).first.click(timeout=10_000)
+                        opened = True
+                        log(f"Opened publish settings using: {sel}")
+                        break
                 except Exception:
                     continue
+            if not opened:
+                save_debug(page, "debug_publish_settings_not_found")
+                raise RuntimeError("Publish settings button not found. See debug_publish_settings_not_found.png/html")
 
-            if not clicked:
-                save_debug(page, "debug")
-                raise RuntimeError("Login button not found. See debug.png/debug.html")
-
-            page.wait_for_load_state("networkidle")
-            log(f"After login URL: {page.url}")
-
-            # --------------------
-            # Drafts -> open first draft
-            # --------------------
-            log("Go to drafts page")
-            page.goto(NOTE_DRAFTS_URL, wait_until="domcontentloaded")
-            page.wait_for_load_state("networkidle")
-
-            dismiss_common_popups(page)
-
-            # ドラフトの「編集」ボタン/リンク候補
-            edit_candidates = [
-                '.m-draftItem__edit',
-                'a:has-text("編集")',
-                'button:has-text("編集")',
-                'a[href*="/edit"]',
-            ]
-
-            edit_sel = pick_first_selector(page, edit_candidates, timeout_each_ms=8000)
-            if not edit_sel:
-                save_debug(page, "debug")
-                raise RuntimeError("Could not find draft edit link/button. UI selector may have changed.")
-
-            log(f"Open first draft by: {edit_sel}")
-            page.locator(edit_sel).first.click()
-            page.wait_for_load_state("domcontentloaded")
-
-            # --------------------
-            # Open publish settings
-            # --------------------
-            log("Open publish settings")
-            setting_candidates = [
-                'button:has-text("公開設定")',
-                'a:has-text("公開設定")',
-                'button:has-text("公開")',
-            ]
-
-            setting_sel = pick_first_selector(page, setting_candidates, timeout_each_ms=8000)
-            if not setting_sel:
-                save_debug(page, "debug")
-                raise RuntimeError("Could not open publish settings. Button text/selector may have changed.")
-
-            page.locator(setting_sel).first.click()
-            log(f"Opened publish settings using: {setting_sel}")
-
-            # --------------------
-            # Add hashtags
-            # --------------------
+            # 5) ハッシュタグ入力（候補を広めに）
             log("Find hashtag input")
-            tag_input_candidates = [
+            tag_candidates = [
                 'input[placeholder*="ハッシュタグ"]',
                 'input[aria-label*="ハッシュタグ"]',
                 'input[name*="tag"]',
                 'input[id*="tag"]',
             ]
-            tag_sel = pick_first_selector(page, tag_input_candidates, timeout_each_ms=8000)
+            tag_sel = None
+            for sel in tag_candidates:
+                try:
+                    page.wait_for_selector(sel, timeout=10_000)
+                    tag_sel = sel
+                    log(f"Hashtag input found: {sel}")
+                    break
+                except PlaywrightTimeoutError:
+                    continue
             if not tag_sel:
-                save_debug(page, "debug")
-                raise RuntimeError("Could not find hashtag input. Need to update selector.")
-
-            log(f"Hashtag input found: {tag_sel}")
+                save_debug(page, "debug_tag_input_not_found")
+                raise RuntimeError("Hashtag input not found. See debug_tag_input_not_found.png/html")
 
             for tag in hashtags:
                 log(f"Add tag: {tag}")
@@ -218,23 +190,28 @@ def publish_note_with_tags():
                 page.keyboard.press("Enter")
                 page.wait_for_timeout(500)
 
-            # --------------------
-            # Publish (skip in TEST_MODE)
-            # --------------------
+            # 6) 投稿（TEST_MODEならスキップ）
             if test_mode:
                 log("TEST_MODE is true: skip clicking Publish.")
             else:
                 log("Click Publish")
-                publish_candidates = [
+                publish_btn_candidates = [
                     'button:has-text("投稿する")',
                     'button:has-text("公開する")',
                 ]
-                pub_sel = pick_first_selector(page, publish_candidates, timeout_each_ms=10_000)
-                if not pub_sel:
-                    save_debug(page, "debug")
-                    raise RuntimeError("Could not find Publish button. Selector/text may have changed.")
-                page.locator(pub_sel).first.click()
-                log(f"Clicked publish using: {pub_sel}")
+                clicked = False
+                for sel in publish_btn_candidates:
+                    try:
+                        page.wait_for_selector(sel, timeout=10_000)
+                        page.locator(sel).first.click()
+                        clicked = True
+                        log(f"Clicked publish using: {sel}")
+                        break
+                    except Exception:
+                        continue
+                if not clicked:
+                    save_debug(page, "debug_publish_button_not_found")
+                    raise RuntimeError("Publish button not found. See debug_publish_button_not_found.png/html")
 
             log("DONE")
             browser.close()
