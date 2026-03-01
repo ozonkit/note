@@ -38,5 +38,5 @@ jobs:
         with:
           name: note-debug
           path: |
-            debug.png
-            debug.html
+            debug*.png
+            debug*.html
