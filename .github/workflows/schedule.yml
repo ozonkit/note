@@ -1,8 +1,8 @@
 name: Note Auto Post
 on:
-  workflow_dispatch:  # ← 手動実行ボタンを追加
+  workflow_dispatch:
   schedule:
-    - cron: '0 12 * * *' # 毎日日本時間の21:00（UTC 12:00）に実行
+    - cron: '0 12 * * *'
 
 jobs:
   build:
@@ -17,9 +17,20 @@ jobs:
         run: |
           pip install playwright
           playwright install chromium
+      - name: Debug - Check files
+        run: |
+          echo "Current directory:"
+          pwd
+          echo "Files in current directory:"
+          ls -la
+          echo "publish_note.py exists:"
+          test -f publish_note.py && echo "YES" || echo "NO"
       - name: Run script
         env:
           NOTE_EMAIL: ${{ secrets.NOTE_EMAIL }}
           NOTE_PASS: ${{ secrets.NOTE_PASS }}
           TEST_MODE: "true"
-        run: python publish_note.py
+        run: |
+          echo "Starting script..."
+          python publish_note.py
+          echo "Script finished with exit code: $?"
