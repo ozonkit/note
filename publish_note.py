@@ -1,162 +1,62 @@
-import os
-import sys
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+log("Go to login page")
+page.goto("https://note.com/login", wait_until="domcontentloaded")
+page.wait_for_load_state("networkidle")
 
-NOTE_LOGIN_URL = "https://note.com/login"
-NOTE_DRAFTS_URL = "https://note.com/notes/drafts"
+log(f"Current URL: {page.url}")
+log(f"Title: {page.title()}")
 
-def log(msg: str):
-    print(msg, flush=True)
+# まずは id セレクタを最優先
+email_sel_candidates = ["#email", 'input#email', 'input[name="email"]', 'input[type="email"]', 'input[autocomplete="email"]']
+pass_sel_candidates  = ["#password", 'input#password', 'input[name="password"]', 'input[type="password"]', 'input[autocomplete="current-password"]']
 
-def must_env(name: str) -> str:
-    v = os.getenv(name)
-    if not v:
-        raise RuntimeError(f"Missing env var: {name}")
-    return v
-
-def publish_note_with_tags():
-    hashtags = ["夫婦", "不倫", "再構築", "内省", "正しさ"]
-
-    email = must_env("NOTE_EMAIL")
-    password = must_env("NOTE_PASS")
-    test_mode = os.getenv("TEST_MODE", "false").lower() in ("1", "true", "yes", "y")
-
-    log("=== publish_note.py start ===")
-    log(f"TEST_MODE={test_mode}")
-    log(f"hashtags={hashtags}")
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--disable-dev-shm-usage", "--no-sandbox"],
-        )
-        context = browser.new_context()
-        page = context.new_page()
-        page.set_default_timeout(30_000)
-
+def pick_first_selector(candidates):
+    for sel in candidates:
         try:
-            # --- ログイン ---
-            log("Go to login page")
-            page.goto(NOTE_LOGIN_URL, wait_until="domcontentloaded")
+            page.wait_for_selector(sel, timeout=6_000)
+            return sel
+        except PlaywrightTimeoutError:
+            continue
+    return None
 
-            log("Fill credentials")
-            page.fill('input[type="email"]', email)
-            page.fill('input[type="password"]', password)
+email_sel = pick_first_selector(email_sel_candidates)
+pass_sel  = pick_first_selector(pass_sel_candidates)
 
-            log("Click login")
-            page.click('button:has-text("ログイン")')
+if not email_sel or not pass_sel:
+    # headlessで違うページを掴んでる可能性があるので証拠を残す
+    page.screenshot(path="debug.png", full_page=True)
+    with open("debug.html", "w", encoding="utf-8") as f:
+        f.write(page.content())
+    raise RuntimeError(f"Login inputs not found. email_sel={email_sel}, pass_sel={pass_sel} (see debug.png/debug.html)")
 
-            # ログイン後の通信が落ち着くのを待つ
-            page.wait_for_load_state("networkidle")
-            log("Login step done (networkidle)")
+log(f"Email selector: {email_sel}")
+log(f"Pass selector:  {pass_sel}")
 
-            # --- 下書き一覧へ ---
-            log("Go to drafts")
-            page.goto(NOTE_DRAFTS_URL, wait_until="domcontentloaded")
+log("Fill credentials")
+page.locator(email_sel).fill(email)
+page.locator(pass_sel).fill(password)
 
-            # 「編集」ボタン/リンク（UI変更に備えて複数候補）
-            log("Find and click draft edit")
-            edit_locators = [
-                '.m-draftItem__edit',
-                'a:has-text("編集")',
-                'button:has-text("編集")',
-            ]
+log("Click login")
+# ログインボタン候補（note側の変更に備えて複数）
+login_btn_candidates = [
+    'button:has-text("ログイン")',
+    'button[type="submit"]',
+    'input[type="submit"]',
+]
+clicked = False
+for sel in login_btn_candidates:
+    try:
+        page.locator(sel).first.click(timeout=6_000)
+        clicked = True
+        log(f"Clicked login button: {sel}")
+        break
+    except Exception:
+        continue
 
-            for sel in edit_locators:
-                try:
-                    page.wait_for_selector(sel, timeout=8_000)
-                    page.click(sel)
-                    log(f"Clicked edit using selector: {sel}")
-                    break
-                except PlaywrightTimeoutError:
-                    continue
-            else:
-                raise RuntimeError("Could not find draft edit button/link. UI selector may have changed.")
+if not clicked:
+    page.screenshot(path="debug.png", full_page=True)
+    with open("debug.html", "w", encoding="utf-8") as f:
+        f.write(page.content())
+    raise RuntimeError("Login button not found (see debug.png/debug.html)")
 
-            page.wait_for_load_state("domcontentloaded")
-
-            # --- 公開設定を開く ---
-            log("Open publish settings")
-            setting_candidates = [
-                'button:has-text("公開設定")',
-                'a:has-text("公開設定")',
-                'button:has-text("公開")',
-            ]
-            for sel in setting_candidates:
-                try:
-                    page.wait_for_selector(sel, timeout=8_000)
-                    page.click(sel)
-                    log(f"Opened publish settings using: {sel}")
-                    break
-                except PlaywrightTimeoutError:
-                    continue
-            else:
-                raise RuntimeError("Could not open publish settings. Button text/selector may have changed.")
-
-            # --- ハッシュタグ入力 ---
-            log("Find hashtag input")
-            tag_input_candidates = [
-                'input[placeholder*="ハッシュタグ"]',
-                'input[aria-label*="ハッシュタグ"]',
-                'input[name*="tag"]',
-            ]
-            tag_input = None
-            for sel in tag_input_candidates:
-                try:
-                    page.wait_for_selector(sel, timeout=8_000)
-                    tag_input = sel
-                    log(f"Hashtag input found: {sel}")
-                    break
-                except PlaywrightTimeoutError:
-                    continue
-            if not tag_input:
-                raise RuntimeError("Could not find hashtag input. Need to update selector.")
-
-            for tag in hashtags:
-                log(f"Add tag: {tag}")
-                page.click(tag_input)
-                page.fill(tag_input, tag)
-                page.keyboard.press("Enter")
-                page.wait_for_timeout(500)
-
-            # --- 投稿ボタン ---
-            if test_mode:
-                log("TEST_MODE is true: skip clicking Publish.")
-            else:
-                log("Click Publish")
-                publish_candidates = [
-                    'button:has-text("投稿する")',
-                    'button:has-text("公開する")',
-                ]
-                for sel in publish_candidates:
-                    try:
-                        page.wait_for_selector(sel, timeout=10_000)
-                        page.click(sel)
-                        log(f"Clicked publish using: {sel}")
-                        break
-                    except PlaywrightTimeoutError:
-                        continue
-                else:
-                    raise RuntimeError("Could not find Publish button. Selector/text may have changed.")
-
-            log("DONE")
-            browser.close()
-
-        except Exception as e:
-            log(f"FAIL: {e}")
-            try:
-                page.screenshot(path="debug.png", full_page=True)
-                log("Saved screenshot: debug.png")
-            except Exception as _:
-                pass
-            try:
-                browser.close()
-            except Exception:
-                pass
-            raise  # exit code 1
-
-def main():
-    publish_note_with_tags()
-
-if __name__ == "__main__":
-    main()
+page.wait_for_load_state("networkidle")
+log(f"After login URL: {page.url}")
