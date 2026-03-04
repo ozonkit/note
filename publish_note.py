@@ -194,24 +194,66 @@ def publish_note_with_tags():
             if test_mode:
                 log("TEST_MODE is true: skip clicking Publish.")
             else:
-                log("Click Publish")
+                log("Click Publish (step 1)")
+
                 publish_btn_candidates = [
                     'button:has-text("投稿する")',
                     'button:has-text("公開する")',
                 ]
-                clicked = False
-                for sel in publish_btn_candidates:
-                    try:
-                        page.wait_for_selector(sel, timeout=10_000)
-                        page.locator(sel).first.click()
-                        clicked = True
-                        log(f"Clicked publish using: {sel}")
-                        break
-                    except Exception:
-                        continue
-                if not clicked:
+
+                def click_first(candidates, timeout=10_000):
+                    for sel in candidates:
+                        try:
+                            page.wait_for_selector(sel, timeout=timeout)
+                            page.locator(sel).first.click()
+                            log(f"Clicked: {sel}")
+                            return True
+                        except Exception:
+                            continue
+                    return False
+
+                # 1回目クリック
+                if not click_first(publish_btn_candidates, timeout=15_000):
                     save_debug(page, "debug_publish_button_not_found")
                     raise RuntimeError("Publish button not found. See debug_publish_button_not_found.png/html")
+
+                # 2段階目の確認が出るケースがあるので、短時間だけ再クリックを試す
+                log("Click Publish (step 2 if confirmation appears)")
+                try:
+                    # 出たときだけ押せればOK。出ないなら例外→無視
+                    if click_first(publish_btn_candidates, timeout=3_000):
+                        log("Confirmation publish clicked.")
+                except Exception:
+                    pass
+
+                # 成功判定：/edit から離れる or 公開完了っぽい表示を待つ
+                log("Wait for publish completion")
+
+                # どれか満たせば成功扱い（UI差分に備えて複数条件）
+                published = False
+                try:
+                    page.wait_for_url(lambda url: "/edit" not in url, timeout=20_000)
+                    log(f"URL changed after publish: {page.url}")
+                    published = True
+                except Exception:
+                    pass
+
+                if not published:
+                    # “公開しました”系のトースト/文言を拾う（見つかったら成功扱い）
+                    try:
+                        page.wait_for_selector('text=公開しました', timeout=5_000)
+                        log("Detected toast: 公開しました")
+                        published = True
+                    except Exception:
+                        pass
+
+                if not published:
+                    # 失敗時は画面を保存して原因を見える化
+                    save_debug(page, "debug_publish_maybe_failed")
+                    raise RuntimeError(
+                        "Publish may have failed (no URL change / no success toast). "
+                        "See debug_publish_maybe_failed.png/html"
+                    )
 
             log("DONE")
             browser.close()
