@@ -94,7 +94,7 @@ def login_if_needed(page, email: str, password: str):
         raise RuntimeError("Login failed (still on /login). See debug_login_failed.png/html")
 
 def publish_note_with_tags():
-    hashtags = ["夫婦", "不倫", "再構築", "内省", "正しさ"]
+    hashtags = ["夫婦", "不倫", "再構築", "内省", "正しさ", "不倫された側"]
 
     email = must_env("NOTE_EMAIL")
     password = must_env("NOTE_PASS")
