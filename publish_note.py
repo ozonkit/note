@@ -1,7 +1,8 @@
 import os
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-EDIT_URL = "https://editor.note.com/notes/n466b124c2023/edit/"
+# EDIT_URL = "https://editor.note.com/notes/n466b124c2023/edit/" ### 下書きリンク
+EDIT_URL = "https://editor.note.com/notes/na9f0431a0ff0/edit/"
 NOTE_LOGIN_URL = "https://note.com/login"
 
 def log(msg: str):
